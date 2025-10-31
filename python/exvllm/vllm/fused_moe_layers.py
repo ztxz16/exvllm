@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+# Some code (cuda graph mainly), copy from: https://github.com/guqiong96/Lvllm
+
 from abc import abstractmethod
 from collections.abc import Iterable
 from enum import Enum

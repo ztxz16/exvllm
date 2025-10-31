@@ -1,3 +1,5 @@
+// Some code about numa setting, copy from: https://github.com/guqiong96/Lvllm
+
 #include "alivethreadpool.h"
 
 #include <numa.h>
