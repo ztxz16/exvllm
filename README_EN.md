@@ -78,6 +78,12 @@ Compilation with cmake is recommended. Ensure you have gcc, g++ (version 9.4 or 
 
 For GPU compilation, a CUDA compilation environment is required. It is advised to use the latest possible CUDA version.
 
+First, install libnuma-dev:
+
+``` sh
+apt-get install libnuma-dev
+```
+
 Use the following command to compile:
 
 ``` sh

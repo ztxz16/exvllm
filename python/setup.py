@@ -4,7 +4,7 @@ all_require = ['vllm']
 
 setup (
     name = "exvllm",
-    version = "0.0.0.1",
+    version = "0.0.0.2",
     author = "huangyuyang",
     author_email = "ztxz16@foxmail.com",
     description = "extend for vllm",

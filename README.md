@@ -77,6 +77,12 @@ pip uninstall ftllm
 
 GPU编译需要提前安装好CUDA编译环境，建议使用尽可能新的CUDA版本
 
+需要安装依赖
+
+``` sh
+apt-get install libnuma-dev
+```
+
 使用如下命令编译
 
 ``` sh

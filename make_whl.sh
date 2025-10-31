@@ -7,7 +7,7 @@ if [ ! -d "$folder" ]; then
 fi
 
 cd $folder
-cmake .. "$@" -DCUDA_ARCH="52;53;70;89" -D CMAKE_CXX_COMPILER=g++-11 -D CMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-11 -D CMAKE_CUDA_COMPILER=/usr/local/cuda-12.1/bin/nvcc
+cmake .. -DMAKE_WHL_X86=ON -DCUDA_ARCH="52;53;70;89" -D CMAKE_CXX_COMPILER=g++-11 -D CMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-11 -D CMAKE_CUDA_COMPILER=/usr/local/cuda-12.1/bin/nvcc
 make -j$(nproc)
 
 # 编译失败停止执行
