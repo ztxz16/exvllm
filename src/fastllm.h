@@ -291,9 +291,17 @@ namespace fastllm {
         }
         
         void stealFromSameNuma() {
-            // 从同一NUMA节点的其他线程偷取任务
-            for (auto& [tid, cpuId] : numaConfig->numaToCpuDict[numaId]) {
-                if (tid == threadId) continue;
+            // 获取同一NUMA节点的所有线程
+            auto& numaThreads = numaConfig->numaToCpuDict[numaId];
+            
+            // 利用连续性计算位置：当前线程ID - NUMA节点第一个线程ID
+            int numaStartThread = numaThreads[0].first;
+            int myPos = threadId - numaStartThread;
+            
+            // 从当前线程开始，环形遍历其他线程
+            for (int offset = 1; offset < numaThreads.size(); offset++) {
+                int targetPos = (myPos + offset) % numaThreads.size();
+                int tid = numaThreads[targetPos].first;
                 
                 TaskState* otherState = (*allStates)[tid];
                 if (otherState == nullptr) continue;
