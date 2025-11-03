@@ -551,6 +551,8 @@ namespace fastllm {
         int block = 0; // 分组量化每组的长度
 
         void Init(int batch, int k, int m, void *data, DataType dataType);
+
+        void Init(int batch, int k, int m, std::vector <std::vector <uint8_t> > &datas, DataType dataType);
         
         FastllmLinearWeight (int batch, int k, int m, void *data, DataType dataType);
 

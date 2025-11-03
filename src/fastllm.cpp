@@ -506,12 +506,12 @@ namespace fastllm {
         size_t blocksPerRow = n / 128;
         size_t rowSize = blocksPerRow * blockSize;
         
-        awq4bit128Value.resize(experts * m * 8 * rowSize);
+        awq4bit128Value.resize((size_t)experts * m * 8 * rowSize);
         
-        for (int e = 0; e < experts; e++) {
-            for (int gy = 0; gy < m; gy++) {
-                for (int y_sub = 0; y_sub < 8; y_sub++) {
-                    int y = gy * 8 + y_sub;
+        for (size_t e = 0; e < experts; e++) {
+            for (size_t gy = 0; gy < m; gy++) {
+                for (size_t y_sub = 0; y_sub < 8; y_sub++) {
+                    size_t y = gy * 8 + y_sub;
                     uint8_t *row_ptr = awq4bit128Value.data() + e * (m * 8) * rowSize + y * rowSize;
                     
                     // 按块处理
@@ -521,7 +521,7 @@ namespace fastllm {
                         
                         // 1. 写入128个uint4权重（64字节）
                         for (int x = 0; x < 128; x += 2) {
-                            int global_x = gx * 128 + x;
+                            size_t global_x = gx * 128 + x;
                             uint8_t packed = 0;
                             int w1 = (qweight[global_x * m + gy] >> awq_shift[y_sub]) & 15;
                             int w2 = (global_x + 1 < n) ? ((qweight[(global_x + 1) * m + gy] >> awq_shift[y_sub]) & 15) : 0;
@@ -556,33 +556,31 @@ namespace fastllm {
         // 每128个fp8需要1个float的scale，所以需要 (m + 127) / 128 个scale
         int numScalesPerRow = (m + 127) / 128;
         int rowSize = m + numScalesPerRow * sizeof(float);
-        
-        fp8Packed.resize(experts * k * rowSize);
-        
-        for (int i = 0; i < experts; i++) {
-            for (int j = 0; j < k; j++) {
-                int rowIdx = i * k + j;
-                int packedOffset = rowIdx * rowSize;
+        fp8Packed.resize((size_t)experts * k * rowSize);
+        for (size_t i = 0; i < experts; i++) {
+            for (size_t j = 0; j < k; j++) {
+                size_t rowIdx = i * k + j;
+                size_t packedOffset = rowIdx * rowSize;
                 
                 // 按照每128个fp8后接一个scale的格式打包
-                int currentPos = packedOffset;
+                size_t currentPos = packedOffset;
                 
                 for (int blockIdx = 0; blockIdx < numScalesPerRow; blockIdx++) {
-                    int blockStart = blockIdx * 128;
-                    int blockEnd = std::min(blockStart + 128, m);
-                    int blockSize = blockEnd - blockStart;
+                    size_t blockStart = blockIdx * 128;
+                    size_t blockEnd = std::min(blockStart + 128, (size_t)m);
+                    size_t blockSize = blockEnd - blockStart;
                     
                     // 复制当前block的fp8数据
-                    for (int l = blockStart; l < blockEnd; l++) {
-                        int srcIdx = i * k * m + j * m + l;
+                    for (size_t l = blockStart; l < blockEnd; l++) {
+                        size_t srcIdx = i * k * m + j * m + l;
                         fp8Packed[currentPos++] = fp8[srcIdx];
                     }
                     
                     // 在这个block后面添加对应的scale
                     // scale的索引计算：需要根据当前block在整个矩阵中的位置
-                    int scaleRow = j / blockK;  // 当前行属于哪个scale行块
-                    int scaleCol = blockStart / blockM;  // 当前block属于哪个scale列块
-                    int scaleIdx = i * ks * ms + scaleRow * ms + scaleCol;
+                    size_t scaleRow = j / blockK;  // 当前行属于哪个scale行块
+                    size_t scaleCol = blockStart / blockM;  // 当前block属于哪个scale列块
+                    size_t scaleIdx = i * ks * ms + scaleRow * ms + scaleCol;
                     
                     float* scalePtr = (float*)(&fp8Packed[currentPos]);
                     *scalePtr = scales[scaleIdx];
@@ -591,6 +589,36 @@ namespace fastllm {
             }
         }
     }
+
+    struct MultiThreadFp8ToFastllmFP8_E4M3_BLOCK128Op : MultiThreadBaseOp {
+        int experts, k, m;
+        uint8_t *fp8;
+        float *scales;
+        int blockK, blockM;
+        std::vector <uint8_t> *fp8Packed;
+
+        MultiThreadFp8ToFastllmFP8_E4M3_BLOCK128Op(
+            int experts,
+            int k,
+            int m,
+            uint8_t *fp8,
+            float *scales,
+            int blockK,
+            int blockM,
+            std::vector<uint8_t> *fp8Packed
+        ) : experts(experts),
+            k(k),
+            m(m),
+            fp8(fp8),
+            scales(scales),
+            blockK(blockK),
+            blockM(blockM),
+            fp8Packed(fp8Packed) {}
+
+        void Run() {
+            Fp8ToFastllmFP8_E4M3_BLOCK128(experts, k, m, fp8, scales, blockK, blockM, *fp8Packed);
+        }
+    };
 
     void FastllmLinearWeight::Init (int batch, int k, int m, void *data, DataType dataType) {
         this->batch = batch;
@@ -614,7 +642,6 @@ namespace fastllm {
                 datas[i][j] = (uint8_t*)allocate_aligned_numa(kPerNuma * sizePerRow, i);
             }
         }
-
         
         // 创建所有任务
         std::vector<std::vector <fastllm::MultiThreadMemcpyOp*> > ops;
@@ -624,7 +651,47 @@ namespace fastllm {
             for (int e = 0; e < this->batch; e++) {
                 ops[i].push_back(new MultiThreadMemcpyOp(
                     (uint8_t*)datas[i][e], 
-                    (uint8_t*)data + (e * k + i * kPerNuma) * sizePerRow, 
+                    (uint8_t*)data + ((size_t)e * k + (size_t)i * kPerNuma) * sizePerRow, 
+                    kPerNuma * sizePerRow
+                ));
+            }
+        }
+
+        DynamicScheduleTasks(ops);
+    }
+
+    void FastllmLinearWeight::Init(int batch, int k, int m, std::vector <std::vector <uint8_t> > &oriDatas, DataType dataType) {
+        this->batch = batch;
+        this->k = k;
+        this->m = m;
+        this->dataType = dataType;
+
+        // printf("into create linear [%d %d %d] (%d) \n", batch, k, m, dataType);
+        auto *numaConfig = GetNumaConfig();
+        size_t sizePerRow = GetDataBytes(dataType, 1, m);
+        if (k % numaConfig->numaCnt != 0) {
+            ErrorInFastLLM("Linear weight's size %% numaCnt != 0.");
+        }
+
+        int kPerNuma = k / numaConfig->numaCnt;
+        datas.resize(numaConfig->numaCnt);
+        for (int i = 0; i < numaConfig->numaCnt; i++) {
+            // datas[i] = (uint8_t*)allocate_aligned_numa(this->batch * kPerNuma * sizePerRow, i);
+            datas[i].resize(this->batch);
+            for (int j = 0; j < batch; j++) {
+                datas[i][j] = (uint8_t*)allocate_aligned_numa(kPerNuma * sizePerRow, i);
+            }
+        }
+        
+        // 创建所有任务
+        std::vector<std::vector <fastllm::MultiThreadMemcpyOp*> > ops;
+        ops.resize(numaConfig->numaCnt);
+
+        for (int i = 0; i < numaConfig->numaCnt; i++) {
+            for (int e = 0; e < this->batch; e++) {
+                ops[i].push_back(new MultiThreadMemcpyOp(
+                    (uint8_t*)datas[i][e], 
+                    (uint8_t*)oriDatas[e].data() + i * kPerNuma * sizePerRow, 
                     kPerNuma * sizePerRow
                 ));
             }
@@ -646,11 +713,46 @@ namespace fastllm {
                 ErrorInFastLLM("Unsupport fp8 quant type.");
             }
 
-            std::vector<uint8_t> fp8Packed;
-            Fp8ToFastllmFP8_E4M3_BLOCK128(batch, k, m, (uint8_t*)data, (float*)scales, blockK, blockM, fp8Packed);
+            std::vector<std::vector <uint8_t> > fp8Packeds;
+            fp8Packeds.resize(batch);
+            int ks = (k - 1) / blockK + 1;
+            int ms = (m - 1) / blockM + 1;
+            
+            /*for (int i = 0; i < batch; i++) {
+                Fp8ToFastllmFP8_E4M3_BLOCK128(1, k, m, 
+                    (uint8_t*)data + (size_t)i * k * m, 
+                    (float*)scales + (size_t)i * ks * ms, 
+                    blockK, blockM, fp8Packeds[i]
+                );
+            }*/
+
+            // 创建所有任务
+            auto *numaConfig = GetNumaConfig();
+            std::vector<std::vector <fastllm::MultiThreadFp8ToFastllmFP8_E4M3_BLOCK128Op*> > ops;
+            ops.resize(numaConfig->numaCnt);
+
+            /*for (int i = 0; i < batch; i++) {
+                Fp8ToFastllmFP8_E4M3_BLOCK128(1, k, m, 
+                    (uint8_t*)data + (size_t)i * k * m, 
+                    (float*)scales + (size_t)i * ks * ms, 
+                    blockK, blockM, fp8Packeds[i]
+                );
+            }*/
+
+            for (int e = 0; e < batch; e++) {
+                ops[e % ops.size()].push_back(new MultiThreadFp8ToFastllmFP8_E4M3_BLOCK128Op(
+                    1, k, m, 
+                    (uint8_t*)data + (size_t)e * k * m, 
+                    (float*)scales + (size_t)e * ks * ms, 
+                    blockK, blockM, &fp8Packeds[e]
+                ));
+
+            }
+            DynamicScheduleTasks(ops);
+
             this->dataType = DataType::FP8_E4M3_BLOCK_128;
             this->block = blockM;
-            this->Init(batch, k, m, fp8Packed.data(), this->dataType);
+            this->Init(batch, k, m, fp8Packeds, this->dataType);
         } else if (dataType == DataType::AWQ_4BIT_128) {
             // printf("into AWQ_4BIT_128 moe\n");    
             if (blockM == 128) { 
