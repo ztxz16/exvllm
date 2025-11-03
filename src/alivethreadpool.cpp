@@ -7,6 +7,21 @@
 #include <iostream>
 
 namespace fastllm {
+    struct NumaDetector {
+        bool canUseNuma = true;
+
+        NumaDetector () {
+            if (numa_available() != -1) {
+                if (numa_run_on_node(0) == -1) {
+                    std::cerr << "Warning: NUMA node binding failed (non-privileged mode?)" << std::endl;
+                    canUseNuma = false;
+                }
+            } else {
+                canUseNuma = false;
+            }
+        }
+    } numaDetector;
+    
     void bind_to_cpu(int cpu_id) {
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
@@ -23,7 +38,8 @@ namespace fastllm {
         if (numa_node_to_cpus(node_id, node_cpus) != 0) {
             perror("Failed to get NUMA node CPUs");
             numa_free_cpumask(node_cpus);
-            std::abort();
+            numaDetector.canUseNuma = false;
+            return;
         }
 
         cpu_set_t cpuset;
@@ -50,29 +66,10 @@ namespace fastllm {
         if (set_mempolicy(policy, mask->maskp, mask->size) == -1) {
             std::cerr << "set_mempolicy failed for node " << node_id 
                     << ": " << errno << " (" << strerror(errno) << ")\n";
-            std::abort();
+            numaDetector.canUseNuma = false;
+            return;
         }
         numa_free_nodemask(mask);
-    }
-
-    void* allocate_aligned_numa(size_t size, int node) { 
-        size_t alignment = 64;
-        size_t total_size = size + alignment - 1;
-        void* raw_ptr = numa_alloc_onnode(total_size, node);
-        if (!raw_ptr) {
-            std::cerr << "Failed to allocate " << size << " bytes on NUMA node " << node << std::endl;
-            return nullptr;
-        }
-        
-        uintptr_t addr = reinterpret_cast<uintptr_t>(raw_ptr);
-        uintptr_t aligned_addr = (addr + alignment - 1) & ~(alignment - 1);
-        return reinterpret_cast<void*>(aligned_addr);
-    }
-
-    void free_aligned_numa(void* aligned_ptr, size_t size) {
-        uintptr_t addr = reinterpret_cast<uintptr_t>(aligned_ptr);
-        void* raw_ptr = reinterpret_cast<void*>(addr & ~(63));
-        numa_free(raw_ptr, size);
     }
 
     void* allocate_aligned(size_t size) {
@@ -97,21 +94,73 @@ namespace fastllm {
         free(raw_ptr);
     }
 
+    void* allocate_aligned_numa(size_t size, int node) { 
+        if (!numaDetector.canUseNuma) {
+            return allocate_aligned(size);
+        }
+        
+        size_t alignment = 64;
+        size_t total_size = size + alignment - 1;
+        void* raw_ptr = numa_alloc_onnode(total_size, node);
+        if (!raw_ptr) {
+            std::cerr << "Failed to allocate " << size << " bytes on NUMA node " << node << std::endl;
+            return nullptr;
+        }
+        
+        uintptr_t addr = reinterpret_cast<uintptr_t>(raw_ptr);
+        uintptr_t aligned_addr = (addr + alignment - 1) & ~(alignment - 1);
+        return reinterpret_cast<void*>(aligned_addr);
+    }
+
+    void free_aligned_numa(void* aligned_ptr, size_t size) {
+        if (!numaDetector.canUseNuma) {
+            free_aligned(aligned_ptr, size);
+            return;
+        }
+        uintptr_t addr = reinterpret_cast<uintptr_t>(aligned_ptr);
+        void* raw_ptr = reinterpret_cast<void*>(addr & ~(63));
+        numa_free(raw_ptr, size);
+    }
+
     struct BindCPUOp : MultiThreadBaseOp {
         int cpuId, numaId;
 
         BindCPUOp (int cpuId, int numaId) : cpuId(cpuId), numaId(numaId) {}
 
         void Run() {
-            bind_to_numa_node(numaId);
-            set_numa_mempolicy(numaId);
-            
-            cpu_set_t cpuset;
-            CPU_ZERO(&cpuset);
-            CPU_SET(this->cpuId, &cpuset);
-            if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == -1) {
-                perror("sched_setaffinity failed");
-                exit(EXIT_FAILURE);
+            try {
+                // 尝试绑定到NUMA节点
+                try {
+                    bind_to_numa_node(numaId);
+                    set_numa_mempolicy(numaId);
+                } catch (const std::exception& e) {
+                    std::cerr << "Warning: Failed to bind to NUMA node " << numaId 
+                            << ": " << e.what() << std::endl;
+                    std::cerr << "Continuing without NUMA binding (may affect performance)" << std::endl;
+                }
+                
+                // 尝试设置CPU亲和性
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                CPU_SET(this->cpuId, &cpuset);
+                if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == -1) {
+                    // 检查是否是权限问题
+                    if (errno == EPERM || errno == EACCES) {
+                        std::cerr << "Warning: Failed to set CPU affinity to CPU " << this->cpuId 
+                                << ": " << strerror(errno) << std::endl;
+                        std::cerr << "Running without CPU pinning (requires privileged mode or CAP_SYS_NICE)" 
+                                << std::endl;
+                        std::cerr << "Consider running with --privileged or --cap-add=SYS_NICE" << std::endl;
+                    } else {
+                        // 其他错误可能更严重，抛出异常
+                        throw std::runtime_error(std::string("sched_setaffinity failed: ") + strerror(errno));
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error in Run(): " << e.what() << std::endl;
+                // 根据需求决定是否继续执行或退出
+                // 如果想要继续执行：不做任何事
+                // 如果想要退出：throw;
             }
         }
     };
