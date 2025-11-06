@@ -75,6 +75,38 @@ exvllm serve Qwen/Qwen3-30B-A3B
   - **描述**: 设置使用的CPU线程数。
   - **示例**: `FT_THREADS=30 exvllm serve Qwen/Qwen3-30B-A3B`
 
+- `FT_THREADS_START` (新增):
+  - **描述**: 指定从哪个CPU核心开始分配线程。
+  - **默认值**: 0 (从第一个核心开始)
+  - **示例**: `FT_THREADS=30 FT_THREADS_START=30 exvllm serve Qwen/Qwen3-30B-A3B`
+
+- `FT_NUMAS`:
+  - **描述**: 设置使用的NUMA节点数量。
+  - **示例**: `FT_NUMAS=2 exvllm serve Qwen/Qwen3-30B-A3B`
+
+- `FT_NUMAS_START` (新增):
+  - **描述**: 指定从哪个NUMA节点开始分配。
+  - **默认值**: 0 (从第一个NUMA节点开始)
+  - **示例**: `FT_NUMAS=2 FT_NUMAS_START=1 exvllm serve Qwen/Qwen3-30B-A3B`
+
+### 多实例使用示例
+
+```bash
+# 实例1：使用核心0-29
+FT_THREADS=30 exvllm serve Qwen/Qwen3-30B-A3B --port 8000 &
+
+# 实例2：使用核心30-59
+FT_THREADS=30 FT_THREADS_START=30 exvllm serve Qwen/Qwen3-30B-A3B --port 8001 &
+
+# 实例3：使用核心60-89
+FT_THREADS=30 FT_THREADS_START=60 exvllm serve Qwen/Qwen3-30B-A3B --port 8002 &
+
+# 等待所有实例完成
+wait
+```
+
+更多详细信息请参考 [CPU绑定指南](CPU_BINDING_GUIDE.md)。
+
 ### 源码安装
 
 若pip安装失败或有其它特殊需求，可以用源码编译安装
