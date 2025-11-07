@@ -47,16 +47,34 @@ namespace fastllm {
         }
         // 读取环境变量 FT_NUMAS
         const char* ftNumas = std::getenv("FT_NUMAS");
+        int numaStart = 0;  // 默认从第0个NUMA节点开始
+        const char* ftNumasStart = std::getenv("FT_NUMAS_START");
+        if (ftNumasStart != nullptr) {
+            numaStart = std::atoi(ftNumasStart);
+            if (numaStart < 0) {
+                numaStart = 0;
+            }
+        }
+        
         if (ftNumas != nullptr) {
             int envNumaCnt = std::atoi(ftNumas);
-            if (envNumaCnt > 0 && envNumaCnt <= systemNumaNodes) {
+            if (envNumaCnt > 0 && (envNumaCnt + numaStart) <= systemNumaNodes) {
                 numaCnt = envNumaCnt;
             } else {
-                numaCnt = systemNumaNodes;
+                numaCnt = systemNumaNodes - numaStart;
+                if (numaCnt <= 0) {
+                    numaCnt = 1;
+                    numaStart = 0;
+                }
             }
         } else {
-            numaCnt = systemNumaNodes;
+            numaCnt = systemNumaNodes - numaStart;
+            if (numaCnt <= 0) {
+                numaCnt = 1;
+                numaStart = 0;
+            }
         }
+        
         // 读取环境变量 FT_THREADS
         const char* ftThreads = std::getenv("FT_THREADS");
         if (ftThreads != nullptr) {
@@ -69,6 +87,17 @@ namespace fastllm {
         } else {
             threads = numaCnt * std::max(1, coresPerNuma / 2 - 2);
         }
+        
+        // 读取环境变量 FT_THREADS_START
+        int threadStart = 0;  // 默认从第0个核心开始
+        const char* ftThreadsStart = std::getenv("FT_THREADS_START");
+        if (ftThreadsStart != nullptr) {
+            threadStart = std::atoi(ftThreadsStart);
+            if (threadStart < 0) {
+                threadStart = 0;
+            }
+        }
+        
         // 初始化 cpuIds
         cpuIds.resize(numaCnt);
         
@@ -85,17 +114,43 @@ namespace fastllm {
             }
             numa_free_cpumask(cpumask);
         }
-        // 将 CPU 分配到指定数量的 NUMA 节点
+        
+        // 应用线程起始偏移
+        if (threadStart > 0) {
+            // 计算需要跳过的CPU总数
+            int totalCpusToSkip = threadStart;
+            
+            // 遍历所有NUMA节点，跳过指定数量的CPU
+            for (int node = 0; node < systemNumaNodes && totalCpusToSkip > 0; ++node) {
+                if (totalCpusToSkip >= allNumaCpus[node].size()) {
+                    // 跳过整个NUMA节点
+                    totalCpusToSkip -= allNumaCpus[node].size();
+                    allNumaCpus[node].clear();
+                } else {
+                    // 跳过部分CPU
+                    allNumaCpus[node].erase(
+                        allNumaCpus[node].begin(), 
+                        allNumaCpus[node].begin() + totalCpusToSkip
+                    );
+                    totalCpusToSkip = 0;
+                }
+            }
+        }
+        
+        // 将 CPU 分配到指定数量的 NUMA 节点，考虑NUMA起始偏移
         if (numaCnt <= systemNumaNodes) {
-            // 直接使用前 numaCnt 个节点的 CPU
+            // 使用从 numaStart 开始的 numaCnt 个节点
             for (int i = 0; i < numaCnt; ++i) {
-                cpuIds[i] = allNumaCpus[i];
+                int nodeIdx = numaStart + i;
+                if (nodeIdx < systemNumaNodes) {
+                    cpuIds[i] = allNumaCpus[nodeIdx];
+                }
             }
         } else {
             // numaCnt > systemNumaNodes 的情况（理论上不应该发生）
-            // 循环分配
+            // 循环分配，考虑NUMA起始偏移
             for (int i = 0; i < numaCnt; ++i) {
-                int nodeIdx = i % systemNumaNodes;
+                int nodeIdx = (numaStart + i) % systemNumaNodes;
                 cpuIds[i] = allNumaCpus[nodeIdx];
             }
         }
